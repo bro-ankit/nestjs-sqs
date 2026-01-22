@@ -3,8 +3,15 @@ import type { LoggerService, ModuleMetadata, Type } from '@nestjs/common';
 import type { Consumer, ConsumerOptions, StopOptions } from 'sqs-consumer';
 import type { Producer } from 'sqs-producer';
 
+export interface SqsConsumerHandlerNameArgument {
+  name?: string;
+  configKey?: string
+}
+
 export type ProducerOptions = Parameters<typeof Producer.create>[0];
 export type QueueName = string;
+// Accepts a string for backward compatibility
+export type QueueNameArgument = QueueName | SqsConsumerHandlerNameArgument;
 
 export type SqsConsumerOptions = Omit<ConsumerOptions, 'handleMessage' | 'handleMessageBatch'> & {
   name: QueueName;
@@ -48,11 +55,11 @@ export interface Message<T = any> {
 }
 
 export interface SqsMessageHandlerMeta {
-  name: string;
+  args: QueueNameArgument;
   batch?: boolean;
 }
 
 export interface SqsConsumerEventHandlerMeta {
-  name: string;
+  args: QueueNameArgument;
   eventName: string;
 }

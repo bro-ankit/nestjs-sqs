@@ -7,11 +7,13 @@ import { SQS_CONSUMER_EVENT_HANDLER, SQS_CONSUMER_METHOD, SQS_OPTIONS } from './
 import {
   Message,
   QueueName,
+  QueueNameArgument,
   SqsConsumerEventHandlerMeta,
   SqsConsumerMapValues,
   SqsMessageHandlerMeta,
   SqsOptions,
 } from './sqs.types';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class SqsService implements OnModuleInit, OnModuleDestroy {
@@ -24,7 +26,8 @@ export class SqsService implements OnModuleInit, OnModuleDestroy {
   public constructor(
     @Inject(SQS_OPTIONS) public readonly options: SqsOptions,
     private readonly discover: DiscoveryService,
-  ) {}
+    private readonly configService: ConfigService
+  ) { }
 
   public async onModuleInit(): Promise<void> {
     this.logger = this.options.logger ?? new Logger('SqsService', { timestamp: false });
@@ -37,11 +40,12 @@ export class SqsService implements OnModuleInit, OnModuleDestroy {
 
     this.options.consumers?.forEach((options) => {
       const { name, stopOptions, ...consumerOptions } = options;
+
       if (this.consumers.has(name)) {
         throw new Error(`Consumer already exists: ${name}`);
       }
 
-      const metadata = messageHandlers.find(({ meta }) => meta.name === name);
+      const metadata = messageHandlers.find(({ meta }) => this.getQueueNameOrThrow(meta.args) === name);
       if (!metadata) {
         this.logger.warn(`No metadata found for: ${name}`);
         return;
@@ -52,14 +56,14 @@ export class SqsService implements OnModuleInit, OnModuleDestroy {
         ...consumerOptions,
         ...(isBatchHandler
           ? {
-              handleMessageBatch: metadata.discoveredMethod.handler.bind(
-                metadata.discoveredMethod.parentClass.instance,
-              ),
-            }
+            handleMessageBatch: metadata.discoveredMethod.handler.bind(
+              metadata.discoveredMethod.parentClass.instance,
+            ),
+          }
           : { handleMessage: metadata.discoveredMethod.handler.bind(metadata.discoveredMethod.parentClass.instance) }),
       });
 
-      const eventsMetadata = eventHandlers.filter(({ meta }) => meta.name === name);
+      const eventsMetadata = eventHandlers.filter(({ meta }) => this.getQueueNameOrThrow(meta.args) === name);
       for (const eventMetadata of eventsMetadata) {
         if (eventMetadata) {
           consumer.addListener(
@@ -68,6 +72,7 @@ export class SqsService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+
       this.consumers.set(name, { instance: consumer, stopOptions: stopOptions ?? this.globalStopOptions });
     });
 
@@ -157,5 +162,18 @@ export class SqsService implements OnModuleInit, OnModuleDestroy {
 
     const producer = this.producers.get(name);
     return producer.send(messages as any[]);
+  }
+
+  private getQueueNameOrThrow(arg?: QueueNameArgument) {
+    if (!arg) {
+      this.logger.warn('Argument for queue name not provided');
+      return '';
+    }
+
+    if (typeof arg === 'string') {
+      return arg;
+    }
+
+    return arg.name ?? this.configService.getOrThrow(arg.configKey ?? '');
   }
 }

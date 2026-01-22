@@ -1,5 +1,5 @@
 import { Message, SQSClient } from '@aws-sdk/client-sqs';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { vi } from 'vitest';
 import { beforeAll } from 'vitest';
@@ -11,11 +11,13 @@ import { afterEach } from 'vitest';
 import { SqsModule, SqsService } from '../lib';
 import { SqsConsumerEventHandler, SqsMessageHandler } from '../lib/sqs.decorators';
 import { SqsConsumerOptions, SqsProducerOptions } from '../lib/sqs.types';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 const SQS_ENDPOINT = process.env.SQS_ENDPOINT || 'http://localhost:9324/000000000000';
 
 enum TestQueue {
   Test = 'test',
+  Test2 = 'test2',
   DLQ = 'test-dead',
 }
 
@@ -32,12 +34,48 @@ const TestQueues: { [key in TestQueue]: SqsConsumerOptions | SqsProducerOptions 
     queueUrl: `${SQS_ENDPOINT}/test.fifo`,
     sqs,
   },
+  [TestQueue.Test2]: {
+    name: TestQueue.Test2,
+    queueUrl: `${SQS_ENDPOINT}/test2.fifo`,
+    sqs,
+  },
   [TestQueue.DLQ]: {
     name: TestQueue.DLQ,
     queueUrl: `${SQS_ENDPOINT}/test-dead.fifo`,
     sqs,
   },
 };
+
+enum ENV_KEYS {
+  TestQueue = 'test_queue',
+  Test2Queue = 'test2_queue',
+  DLQ = 'dlq',
+}
+
+class MockConfigService {
+  private readonly CONFIG: Record<ENV_KEYS, TestQueue> = {
+    test_queue: TestQueue.Test,
+    test2_queue: TestQueue.Test2,
+    dlq: TestQueue.DLQ,
+  };
+
+  getOrThrow(key: ENV_KEYS) {
+    if (!this.CONFIG[key]) throw new Error(`Config key not found: ${key}`);
+    return this.CONFIG[key];
+  }
+}
+
+@Module({
+  providers: [
+    {
+      provide: ConfigService,
+      useClass: MockConfigService,
+    }
+  ],
+  exports: [ConfigService]
+})
+class MockConfigServiceModule { }
+
 
 describe('SqsModule', () => {
   let module: TestingModule;
@@ -77,7 +115,7 @@ describe('SqsModule', () => {
 
     @Injectable()
     class A {
-      public constructor(public readonly sqsService: SqsService) {}
+      public constructor(public readonly sqsService: SqsService) { }
 
       @SqsMessageHandler(TestQueue.Test)
       public async handleTestMessage(message: Message) {
@@ -90,6 +128,26 @@ describe('SqsModule', () => {
       }
 
       @SqsMessageHandler(TestQueue.DLQ)
+      public async handleDLQMessage(message: Message) {
+        fakeDLQProcessor(message);
+      }
+    }
+
+    @Injectable()
+    class B {
+      constructor(public readonly sqsService: SqsService) { }
+
+      @SqsMessageHandler({ configKey: ENV_KEYS.Test2Queue })
+      public async handleTestMessage(message: Message) {
+        fakeProcessor(message);
+      }
+
+      @SqsConsumerEventHandler({ name: TestQueue.Test }, 'processing_error')
+      public handleErrorEvent(err: Error, message: Message) {
+        fakeErrorEventHandler(err, message);
+      }
+
+      @SqsMessageHandler({ configKey: ENV_KEYS.DLQ })
       public async handleDLQMessage(message: Message) {
         fakeDLQProcessor(message);
       }
@@ -108,19 +166,25 @@ describe('SqsModule', () => {
                 messageAttributeNames: ['All'],
               },
               {
+                ...TestQueues[TestQueue.Test2],
+                waitTimeSeconds: 1,
+                batchSize: 3,
+                terminateVisibilityTimeout: true,
+                messageAttributeNames: ['All'],
+              },
+              {
                 ...TestQueues[TestQueue.DLQ],
                 waitTimeSeconds: 1,
               },
             ],
             producers: [
-              {
-                ...TestQueues[TestQueue.Test],
-              },
+              TestQueues[TestQueue.Test],
+              TestQueues[TestQueue.Test2],
             ],
           }),
         ],
-        providers: [A],
-      }).compile();
+        providers: [A, B],
+      }).overrideModule(ConfigModule).useModule(MockConfigServiceModule).compile();
       await module.init();
 
       const sqsService = module.get(SqsService);
@@ -231,6 +295,32 @@ describe('SqsModule', () => {
         }
       });
     }, 5000);
+
+    it('should register and call a handler using configKey', async () => {
+      const sqsService = module.get(SqsService);
+      const id = String(Math.floor(Math.random() * 1000000));
+
+      await new Promise<void>(async (resolve, reject) => {
+        try {
+          fakeProcessor.mockImplementation((message) => {
+            expect(message).toBeTruthy();
+            expect(JSON.parse(message.Body)).toStrictEqual({ test: true });
+            resolve();
+          });
+
+          await sqsService.send(TestQueue.Test2, {
+            id,
+            body: { test: true },
+            delaySeconds: 0,
+            groupId: 'test',
+            deduplicationId: id,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
 
     it('should consume a dead letter from DLQ', async () => {
       await vi.waitFor(

@@ -3,10 +3,11 @@ import { DynamicModule, Global, Module, Provider, Type } from '@nestjs/common';
 import { SQS_OPTIONS } from './sqs.constants';
 import { SqsService } from './sqs.service';
 import { SqsModuleAsyncOptions, SqsModuleOptionsFactory, SqsOptions } from './sqs.types';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 @Global()
 @Module({
-  imports: [DiscoveryModule],
+  imports: [DiscoveryModule, ConfigModule],
   providers: [SqsService],
   exports: [SqsService],
 })
@@ -18,15 +19,16 @@ export class SqsModule {
     };
     const sqsProvider: Provider = {
       provide: SqsService,
-      // biome-ignore lint/correctness/noUnusedVariables: <ignore>
-      useFactory: (sqsOptions: SqsOptions, discover: DiscoveryService) => new SqsService(options, discover),
-      inject: [SQS_OPTIONS, DiscoveryService],
+      useFactory: (_sqsOptions: SqsOptions, discover: DiscoveryService, configService: ConfigService) => {
+        return new SqsService(options, discover, configService)
+      },
+      inject: [SQS_OPTIONS, DiscoveryService, ConfigService],
     };
 
     return {
       global: true,
       module: SqsModule,
-      imports: [DiscoveryModule],
+      imports: [DiscoveryModule, ConfigModule],
       providers: [sqsOptions, sqsProvider],
       exports: [sqsProvider],
     };
@@ -36,14 +38,14 @@ export class SqsModule {
     const asyncProviders = this.createAsyncProviders(options);
     const sqsProvider: Provider = {
       provide: SqsService,
-      useFactory: (options: SqsOptions, discover: DiscoveryService) => new SqsService(options, discover),
-      inject: [SQS_OPTIONS, DiscoveryService],
+      useFactory: (options: SqsOptions, discover: DiscoveryService, configService: ConfigService) => new SqsService(options, discover, configService),
+      inject: [SQS_OPTIONS, DiscoveryService, ConfigService],
     };
 
     return {
       global: true,
       module: SqsModule,
-      imports: [DiscoveryModule, ...(options.imports ?? [])],
+      imports: [DiscoveryModule, ConfigModule, ...(options.imports ?? [])],
       providers: [...asyncProviders, sqsProvider],
       exports: [sqsProvider],
     };
